@@ -1,0 +1,1 @@
+"""Validated browser tool definitions."""

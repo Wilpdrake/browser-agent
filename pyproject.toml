@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "browser-agent-test"
+version = "0.1.0"
+description = "Local visible-browser AI agent with explicit tools"
+requires-python = ">=3.12"
+dependencies = ["playwright>=1.51,<2", "pydantic>=2.10,<3", "pydantic-settings>=2.8,<3", "rich>=13.9,<15", "httpx>=0.28,<1"]
+
+[project.scripts]
+browser-agent = "browser_agent.main:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.11,<1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/browser_agent"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-m 'not gui'"
+markers = ["gui: opt-in real visible browser integration tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [".uv-cache", ".python", ".playwright", ".runtime", "browser-data", "screenshots"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ASYNC240"]

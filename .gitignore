@@ -1,0 +1,17 @@
+.env
+.venv/
+.uv-cache/
+.python/
+.playwright/
+.runtime/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+errors.log
+browser-data/*
+!browser-data/.gitkeep
+screenshots/*
+!screenshots/.gitkeep
