@@ -46,6 +46,20 @@ SNAPSHOT = r"""({key, epoch, maxElements, maxText, maxLabel}) => {
    if (p && !p.closest('script,style,noscript,input,textarea,[contenteditable]') && visible(p))
      text += trim(walker.currentNode.textContent, maxText-text.length) + ' ';
  }
+ // Keep retrieval chunks inside the browser/Python boundary. observe_page exposes
+ // only their count; query_dom returns a small ranked subset on demand.
+ const text_chunks = [];
+ let chunkChars = 0;
+ const blocks = document.querySelectorAll(
+   'h1,h2,h3,h4,h5,h6,p,li,article,section,main,tr,dt,dd,figcaption');
+ for (const block of blocks) {
+   if (text_chunks.length >= 500 || chunkChars >= maxText || !visible(block) ||
+       block.closest('script,style,noscript,input,textarea,[contenteditable]')) continue;
+   const value = trim(block.innerText, Math.min(maxLabel * 4, maxText-chunkChars));
+   if (!value || text_chunks.includes(value)) continue;
+   text_chunks.push(value);
+   chunkChars += value.length;
+ }
  const elements = [], current = new Set();
  const selector = 'a[href],button,input:not([type=hidden]),textarea,select,' +
    '[role],[contenteditable=true],[tabindex]';
@@ -85,7 +99,7 @@ SNAPSHOT = r"""({key, epoch, maxElements, maxText, maxLabel}) => {
    if (!item.el.isConnected || (maxElements > 0 && !current.has(token)))
      store.entries.delete(token);
  return {epoch:store.epoch,url:location.href.slice(0,2048),title:trim(document.title),
-   headings,text:text.trim().slice(0,maxText),elements};
+   headings,text:text.trim().slice(0,maxText),text_chunks,elements};
 }"""
 
 RESOLVE = r"""(el, {key,token,version,epoch}) => {

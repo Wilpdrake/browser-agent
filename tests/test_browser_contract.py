@@ -16,6 +16,17 @@ class ContractTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 await browser.navigate(url)
 
+    async def test_private_network_navigation_is_blocked_by_default(self):
+        browser = BrowserSession(SimpleNamespace(allow_private_network=False))
+        for url in (
+            "http://localhost/admin",
+            "http://127.0.0.1:8080/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::1]/",
+        ):
+            with self.subTest(url=url), self.assertRaisesRegex(ValueError, "private network"):
+                await browser.navigate(url)
+
     async def test_query_uses_cached_snapshot(self):
         browser = BrowserSession(SimpleNamespace())
         browser._snapshot = {

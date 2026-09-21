@@ -36,12 +36,16 @@ class Console:
         return lambda *args: self.events.append((name, args))
 
 
-def make_agent(responses, steps=40, history=180000):
+def make_agent(responses, steps=40, history=180000, context=12000):
     from browser_agent.agent.agent import Agent
 
     provider, registry, console = Provider(responses), Registry(), Console()
     agent = Agent(
-        SimpleNamespace(max_agent_steps=steps, max_history_chars=history),
+        SimpleNamespace(
+            max_agent_steps=steps,
+            max_history_chars=history,
+            max_context_chars=context,
+        ),
         provider,
         registry,
         console,
@@ -50,6 +54,38 @@ def make_agent(responses, steps=40, history=180000):
 
 
 class AgentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_completed_tasks_become_bounded_context_without_tool_payloads(self):
+        agent, provider, registry, console = make_agent(
+            [LLMResponse(content="Первый итог"), LLMResponse(content="Второй итог")]
+        )
+
+        await agent.run("Первая задача")
+        await agent.run("Продолжи с учетом прошлого")
+
+        second_request = provider.requests[1]
+        context = next(
+            m["content"]
+            for m in second_request
+            if m["role"] == "assistant" and "Контекст" in m["content"]
+        )
+        self.assertIn("Первая задача", context)
+        self.assertIn("Первый итог", context)
+        self.assertNotIn("observed", context)
+        self.assertFalse(any(m["role"] == "tool" for m in second_request[:-2]))
+
+        agent.reset()
+        self.assertEqual(agent.context_entries, ())
+
+    async def test_context_evicts_oldest_completed_tasks(self):
+        agent, provider, registry, console = make_agent(
+            [LLMResponse(content="A" * 30), LLMResponse(content="B" * 30)], context=90
+        )
+        await agent.run("old-task-" + "x" * 30)
+        await agent.run("new-task-" + "y" * 30)
+
+        self.assertNotIn("old-task", "\n".join(agent.context_entries))
+        self.assertIn("new-task", "\n".join(agent.context_entries))
+
     async def test_initial_observation_precedes_final_and_reset(self):
         agent, provider, registry, console = make_agent([LLMResponse(content="Done")])
         self.assertEqual(await agent.run("Read page"), "Done")
@@ -176,6 +212,25 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [name for name, args in registry.calls],
             ["observe_page", "click_element", "observe_page"],
+        )
+        self.assertEqual(len(provider.requests), 2)
+
+    async def test_read_only_query_preserves_fresh_observation(self):
+        agent, provider, registry, console = make_agent(
+            [
+                LLMResponse(
+                    tool_calls=[
+                        ToolCall(id="query", name="query_dom", arguments='{"query":"price"}')
+                    ]
+                ),
+                LLMResponse(content="Read from targeted result"),
+            ]
+        )
+
+        self.assertEqual(await agent.run("Read price"), "Read from targeted result")
+        self.assertEqual(
+            [name for name, args in registry.calls],
+            ["observe_page", "query_dom"],
         )
         self.assertEqual(len(provider.requests), 2)
 

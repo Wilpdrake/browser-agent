@@ -72,3 +72,17 @@ def test_console_treats_page_text_as_literal():
     console = Console(RichConsole(file=stream, color_system=None))
     console.final("[red]untrusted[/red]")
     assert "[red]untrusted[/red]" in stream.getvalue()
+
+
+def test_console_redacts_typed_text():
+    from rich.console import Console as RichConsole
+
+    from browser_agent.cli.console import Console
+
+    stream = StringIO()
+    console = Console(RichConsole(file=stream, color_system=None))
+    console.tool_start("type_text", {"ref": "e1", "text": "TOPSECRET", "typing": False})
+
+    rendered = stream.getvalue()
+    assert "TOPSECRET" not in rendered
+    assert "[REDACTED" in rendered

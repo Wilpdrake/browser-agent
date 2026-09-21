@@ -33,5 +33,6 @@ async def test_unknown_tool_and_url():
 
 def test_schemas_match_tools():
     schemas = registry().schemas()
-    assert len(schemas) >= 12
+    assert len(schemas) >= 11
     assert all(x["function"]["parameters"]["additionalProperties"] is False for x in schemas)
+    assert "get_page_text" not in {x["function"]["name"] for x in schemas}

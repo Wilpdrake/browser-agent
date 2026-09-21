@@ -1,10 +1,12 @@
 import asyncio
+import ipaddress
 import math
+import re
 import tempfile
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 if TYPE_CHECKING:
     from browser_agent.config import Settings
@@ -73,6 +75,32 @@ class BrowserSession:
         self.refs.clear()
         self._snapshot = None
 
+    @staticmethod
+    def _public_url(url: str) -> str:
+        parsed = urlsplit(url)
+        if parsed.scheme in {"http", "https"}:
+            return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+        return "about:blank" if url == "about:blank" else "<non-http-page>"
+
+    @staticmethod
+    def _is_private_host(hostname: str) -> bool:
+        host = hostname.casefold().rstrip(".")
+        if host == "localhost" or host.endswith(".localhost"):
+            return True
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return any(
+            (
+                address.is_private,
+                address.is_loopback,
+                address.is_link_local,
+                address.is_reserved,
+                address.is_unspecified,
+            )
+        )
+
     def _activate_page(self, page):
         self._invalidate()
         self._page = page
@@ -120,6 +148,10 @@ class BrowserSession:
             or parsed.password
         ):
             raise ValueError("Use an http or https URL")
+        if not getattr(self.settings, "allow_private_network", False) and self._is_private_host(
+            parsed.hostname
+        ):
+            raise ValueError("Navigation to a private network is disabled")
         self.refs.clear()
         await self._require_page().goto(url, wait_until="domcontentloaded")
         return await self.observe()
@@ -150,16 +182,51 @@ class BrowserSession:
             element.update(normalized)
             element["ref"] = self.refs.add(item)
         self._snapshot = {"success": True, **snapshot}
-        return self._snapshot
+        return {
+            "success": True,
+            "url": self._public_url(snapshot["url"]),
+            "title": snapshot["title"],
+            "element_count": len(snapshot["elements"]),
+            "text_chunk_count": len(snapshot.get("text_chunks", [])),
+            "hint": "Use query_dom to retrieve only relevant text and elements.",
+        }
 
-    async def query_dom(self, query: str) -> dict[str, Any]:
+    async def query_dom(self, query: str, limit: int = 10) -> dict[str, Any]:
         if self._snapshot is None:
             raise BrowserError("No current snapshot; observe first")
-        result = dict(self._snapshot)
-        ranked = [(score_element(query, e), i, e) for i, e in enumerate(result["elements"])]
+        bounded_limit = min(limit, getattr(self.settings, "max_query_results", 10))
+        ranked = [(score_element(query, e), i, e) for i, e in enumerate(self._snapshot["elements"])]
         ranked.sort(key=lambda row: (-row[0], row[1]))
-        result["elements"] = [{**e, "score": score} for score, _, e in ranked if score > 0]
-        return result
+        elements = [{**e, "score": score} for score, _, e in ranked if score > 0][:bounded_limit]
+
+        words = re.findall(r"\w+", query.casefold())
+        chunks = self._snapshot.get("text_chunks") or [self._snapshot.get("text", "")]
+        text_ranked = []
+        for index, chunk in enumerate(chunks):
+            folded = chunk.casefold()
+            score = sum(1 for word in words if word in folded)
+            if score:
+                text_ranked.append((score, index, chunk))
+        text_ranked.sort(key=lambda row: (-row[0], row[1]))
+        max_text = getattr(self.settings, "max_query_text_length", 2000)
+        text_matches = []
+        used = 0
+        for _, _, chunk in text_ranked[:bounded_limit]:
+            remaining = max_text - used
+            if remaining <= 0:
+                break
+            value = chunk[:remaining]
+            text_matches.append(value)
+            used += len(value)
+
+        return {
+            "success": True,
+            "url": self._public_url(self._snapshot.get("url", "")),
+            "title": self._snapshot.get("title", ""),
+            "query": query,
+            "elements": elements,
+            "text_matches": text_matches,
+        }
 
     async def _resolve(self, ref):
         page = self._require_page()

@@ -89,8 +89,6 @@ async def run(settings: Settings, task: str | None, console: Console) -> int:
             elif current:
                 console.status("Задача: " + current)
                 try:
-                    # Each task has a fresh conversation; the same browser stays visible.
-                    agent.reset()
                     result = await agent.run(current)
                     console.final(result)
                 except (LLMError, AgentError) as exc:

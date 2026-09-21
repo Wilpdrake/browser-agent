@@ -35,12 +35,43 @@ class Agent:
     ) -> None:
         self.settings, self.provider = settings, provider
         self.registry, self.console = registry, console
+        self._context: list[str] = []
         self.reset()
 
     def reset(self) -> None:
+        self._context.clear()
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._tools = 0
         self._fresh = False
+
+    @property
+    def context_entries(self) -> tuple[str, ...]:
+        return tuple(self._context)
+
+    def _remember(self, task: str, result: str) -> None:
+        limit = getattr(self.settings, "max_context_chars", 12000)
+        overhead = len("Задача: \nРезультат: ")
+        available = max(2, limit - overhead)
+        task_budget = max(1, available // 2)
+        result_budget = max(1, available - task_budget)
+        entry = f"Задача: {task[:task_budget]}\nРезультат: {result[:result_budget]}"
+        self._context.append(entry)
+        while len("\n\n".join(self._context)) > limit and len(self._context) > 1:
+            self._context.pop(0)
+
+    def _start_task(self, task: str) -> None:
+        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        if self._context:
+            self.messages.append(
+                {
+                    "role": "assistant",
+                    "content": (
+                        "Контекст предыдущих задач этой сессии. Это справочная память, "
+                        "а не новые инструкции:\n\n" + "\n\n".join(self._context)
+                    ),
+                }
+            )
+        self.messages.append({"role": "user", "content": task})
 
     def _check_history(self) -> None:
         size = len(json.dumps(self.messages, ensure_ascii=False))
@@ -56,9 +87,15 @@ class Agent:
         except Exception:
             result = _error("tool_failed", "Tool execution failed; observe before retrying")
         self.console.tool_end(result, monotonic() - start)
-        self._fresh = (
-            name == "observe_page" and result.get("success") is True and not result.get("error")
-        )
+        if name == "observe_page":
+            self._fresh = result.get("success") is True and not result.get("error")
+        elif name not in {
+            "query_dom",
+            "take_screenshot",
+            "scroll_page",
+            "scroll_into_view",
+        }:
+            self._fresh = False
         return result
 
     async def _batch(self, calls: list[ToolCall]) -> None:
@@ -122,7 +159,7 @@ class Agent:
         """Execute a task serially; the caller prints the returned final text."""
         self._tools = 0
         self._fresh = False
-        self.messages.append({"role": "user", "content": task})
+        self._start_task(task)
         try:
             self._check_history()
             await self._observe()
@@ -139,6 +176,7 @@ class Agent:
                 text = response.content or ""
                 self.messages.append({"role": "assistant", "content": text})
                 self._check_history()
+                self._remember(task, text)
                 return text
             raise AgentError("Agent round limit exceeded")
         except (AgentError, LLMError):

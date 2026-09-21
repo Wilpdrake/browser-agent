@@ -24,7 +24,10 @@ class Console:
     def tool_start(self, name: str, arguments: dict) -> None:
         self.output.rule(Text("🔧 " + safe(name)))
         self.output.print("Arguments:", style="bold")
-        self.output.print_json(json.dumps(arguments, ensure_ascii=False))
+        displayed = dict(arguments)
+        if name == "type_text" and "text" in displayed:
+            displayed["text"] = f"[REDACTED {len(str(displayed['text']))} chars]"
+        self.output.print_json(json.dumps(displayed, ensure_ascii=False))
 
     def tool_end(self, result: dict, duration: float) -> None:
         success = result.get("success", False)

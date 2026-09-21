@@ -48,8 +48,9 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         result = await self.browser.observe()
         self.assertTrue(result["success"])
         self.assertEqual(result["title"], "Fixture")
-        self.assertLessEqual(len(result["text"]), 90)
-        self.assertLessEqual(len(result["elements"]), 4)
+        self.assertNotIn("text", result)
+        self.assertNotIn("elements", result)
+        self.assertLessEqual(result["element_count"], 4)
         self.assertNotIn("SECRET", str(result))
         found = await self.browser.query_dom("поле поиска")
         ref = found["elements"][0]["ref"]
@@ -62,13 +63,12 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(Path(shot["path"]).is_file())
         self.assertEqual(Path(shot["path"]).parent, self.settings.project_root / "screenshots")
         self.assertLessEqual(len((await self.browser.get_page_text())["text"]), 90)
-        button = (
-            next(e for e in found["elements"] if e["tag"] == "button")
-            if any(e["tag"] == "button" for e in found["elements"])
-            else next(e for e in (await self.browser.observe())["elements"] if e["tag"] == "button")
-        )
+        await self.browser.observe()
+        button = (await self.browser.query_dom("Submit"))["elements"][0]
         await self.browser.click(button["ref"])
-        self.assertIn("Done", (await self.browser.observe())["text"])
+        await self.browser.observe()
+        verified = await self.browser.query_dom("Done")
+        self.assertEqual(verified["elements"][0]["text"], "Done")
         await self.browser._page.goto("about:blank")
         with self.assertRaises(StaleReferenceError):
             await self.browser.click(ref)
@@ -80,16 +80,21 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
             <div role="checkbox" aria-checked="true">Chosen</div>
             <button style="display:none">Hidden</button>
             <button>  Add   one </button>""")
-        elements = (await self.browser.observe())["elements"]
-        self.assertEqual(elements[0]["role"], "searchbox")
-        self.assertEqual(elements[0]["aria_label"], "Search products")
-        self.assertTrue(any(e["role"] == "checkbox" for e in elements))
-        self.assertEqual(elements[-1]["text"], "Add one")
-        self.assertFalse(any(e["text"] == "Hidden" for e in elements))
+        await self.browser.observe()
+        search = (await self.browser.query_dom("Search products"))["elements"][0]
+        self.assertEqual(search["role"], "searchbox")
+        self.assertEqual(search["aria_label"], "Search products")
+        checkbox = (await self.browser.query_dom("checkbox"))["elements"][0]
+        self.assertEqual(checkbox["role"], "checkbox")
+        self.assertEqual(
+            (await self.browser.query_dom("Add one"))["elements"][0]["text"], "Add one"
+        )
+        self.assertFalse((await self.browser.query_dom("Hidden"))["elements"])
 
     async def test_unrelated_modal_invalidates_previous_refs(self):
         await self.browser._page.set_content("<button>Background</button>")
-        ref = (await self.browser.observe())["elements"][0]["ref"]
+        await self.browser.observe()
+        ref = (await self.browser.query_dom("Background"))["elements"][0]["ref"]
         await self.browser._page.evaluate(
             "document.body.insertAdjacentHTML('beforeend', '<div role=dialog>Modal</div>')"
         )
@@ -105,13 +110,15 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
             "const b=document.querySelector('button'); b.remove(); document.body.append(b)",
         ):
             await page.set_content('<button onclick="window.didClick=true">Original</button>')
-            ref = (await self.browser.observe())["elements"][0]["ref"]
+            await self.browser.observe()
+            ref = (await self.browser.query_dom("Original"))["elements"][0]["ref"]
             await page.evaluate(mutation)
             with self.assertRaises(StaleReferenceError):
                 await self.browser.click(ref)
             self.assertFalse(await page.evaluate("!!window.didClick"))
         await page.set_content("<button disabled>Disabled</button>")
-        ref = (await self.browser.observe())["elements"][0]["ref"]
+        await self.browser.observe()
+        ref = (await self.browser.query_dom("Disabled"))["elements"][0]["ref"]
         with self.assertRaises(BrowserError):
             await self.browser.click(ref)
 
@@ -121,7 +128,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
             "<textarea>HIDDENVALUE</textarea>"
         )
         observation = await self.browser.observe()
-        ref = observation["elements"][0]["ref"]
+        ref = (await self.browser.query_dom("search"))["elements"][0]["ref"]
         self.assertEqual((await self.browser.query_dom("search"))["elements"][0]["ref"], ref)
         self.assertNotIn("TOPSECRET", str(observation))
         self.assertNotIn("HIDDENVALUE", str(observation))
@@ -131,7 +138,8 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             await self.browser._page.locator("input[type=search]").input_value(), "onetwo"
         )
-        fresh = (await self.browser.observe())["elements"][0]["ref"]
+        await self.browser.observe()
+        fresh = (await self.browser.query_dom("search"))["elements"][0]["ref"]
         self.assertNotEqual(ref, fresh)
         with self.assertRaises(StaleReferenceError):
             await self.browser.type_text(ref, "old")
@@ -139,13 +147,15 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     async def test_detached_node_can_be_reobserved_after_reattachment(self):
         page = self.browser._page
         await page.set_content("<button>Reuse me</button>")
-        ref = (await self.browser.observe())["elements"][0]["ref"]
+        await self.browser.observe()
+        ref = (await self.browser.query_dom("Reuse me"))["elements"][0]["ref"]
         await page.evaluate(
             'window.savedButton=document.querySelector("button"); savedButton.remove()'
         )
         await self.browser.observe()
         await page.evaluate("document.body.append(savedButton)")
-        fresh = (await self.browser.observe())["elements"][0]["ref"]
+        await self.browser.observe()
+        fresh = (await self.browser.query_dom("Reuse me"))["elements"][0]["ref"]
         self.assertNotEqual(ref, fresh)
         await self.browser.click(fresh)
 
@@ -154,7 +164,8 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
             "<button onclick=\"window.open('about:blank')\">Open</button>"
         )
         old_page = self.browser._page
-        ref = (await self.browser.observe())["elements"][0]["ref"]
+        await self.browser.observe()
+        ref = (await self.browser.query_dom("Open"))["elements"][0]["ref"]
         async with self.browser._context.expect_page():
             await self.browser.click(ref)
         self.assertIsNot(self.browser._page, old_page)
@@ -208,19 +219,19 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
 
             async def chat(self, messages, tools):
                 self.step += 1
-                observation = next(
-                    json.loads(m["content"])
-                    for m in reversed(messages)
-                    if m["role"] == "tool" and "elements" in m["content"]
+                latest = json.loads(
+                    next(m["content"] for m in reversed(messages) if m["role"] == "tool")
                 )
-                if self.step in (2, 4):
+                if self.step == 1:
                     return LLMResponse(
                         tool_calls=[
-                            ToolCall(id=str(self.step), name="observe_page", arguments="{}")
+                            ToolCall(
+                                id="find-input", name="query_dom", arguments='{"query":"Search"}'
+                            )
                         ]
                     )
-                if self.step == 1:
-                    ref = next(e["ref"] for e in observation["elements"] if e["tag"] == "input")
+                if self.step == 2:
+                    ref = next(e["ref"] for e in latest["elements"] if e["tag"] == "input")
                     return LLMResponse(
                         tool_calls=[
                             ToolCall(
@@ -230,8 +241,22 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
                             )
                         ]
                     )
-                if self.step == 3:
-                    ref = next(e["ref"] for e in observation["elements"] if e["tag"] == "button")
+                if self.step in (3, 6, 8):
+                    return LLMResponse(
+                        tool_calls=[
+                            ToolCall(id=f"observe-{self.step}", name="observe_page", arguments="{}")
+                        ]
+                    )
+                if self.step == 4:
+                    return LLMResponse(
+                        tool_calls=[
+                            ToolCall(
+                                id="find-button", name="query_dom", arguments='{"query":"Add"}'
+                            )
+                        ]
+                    )
+                if self.step == 5:
+                    ref = next(e["ref"] for e in latest["elements"] if e["tag"] == "button")
                     return LLMResponse(
                         tool_calls=[
                             ToolCall(
@@ -239,7 +264,19 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
                             )
                         ]
                     )
-                assert "Verified" in observation["text"]
+                if self.step == 7:
+                    return LLMResponse(
+                        tool_calls=[
+                            ToolCall(
+                                id="verify", name="query_dom", arguments='{"query":"Verified"}'
+                            )
+                        ]
+                    )
+                assert any(
+                    "Verified" in json.loads(m["content"]).get("text_matches", [])
+                    for m in messages
+                    if m["role"] == "tool"
+                )
                 return LLMResponse(content="Verified from actual page")
 
         output = StringIO()

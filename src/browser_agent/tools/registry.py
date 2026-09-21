@@ -36,6 +36,7 @@ class Navigate(Arguments):
 
 class Query(Arguments):
     query: str = Field(min_length=1, max_length=500)
+    limit: int = Field(default=10, ge=1, le=50)
 
 
 class Ref(Arguments):
@@ -99,10 +100,15 @@ TOOLS = (
     Tool(
         "observe_page",
         "observe",
-        "Get compact page observation and NEW temporary element refs.",
+        "Get page metadata and counts only. Use query_dom for relevant content and refs.",
         Arguments,
     ),
-    Tool("query_dom", "query_dom", "Search the current snapshot locally, e.g. поле поиска.", Query),
+    Tool(
+        "query_dom",
+        "query_dom",
+        "Retrieve only locally ranked text and elements from the current snapshot.",
+        Query,
+    ),
     Tool(
         "click_element", "click", "Click an observed element. Observe again after interaction.", Ref
     ),
@@ -123,12 +129,6 @@ TOOLS = (
     ),
     Tool("wait", "wait", "Wait 0.1–10 seconds for a known pending page update.", Wait),
     Tool("go_back", "back", "Go back in browser history. Observe afterwards.", Arguments),
-    Tool(
-        "get_page_text",
-        "get_page_text",
-        "Read bounded visible page text, never full HTML.",
-        Arguments,
-    ),
 )
 
 

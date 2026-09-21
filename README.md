@@ -46,6 +46,8 @@ LLM_PROVIDER=openai-compatible
 
 Это пример адреса, не настроенный сервис. `LLM_BASE_URL` — корень API,
 **не** полный `/chat/completions`: адаптер добавляет этот путь сам.
+Для удалённого API обязателен HTTPS; обычный HTTP разрешён только для loopback
+(`localhost`, `127.0.0.1`, `::1`).
 Нужна модель/API с поддержкой OpenAI-compatible `tools` / `tool_calls`.
 Без настроек CLI выводит понятную ошибку и завершается с кодом 2 до запуска браузера.
 Никаких реальных ключей в проекте нет. Переменные окружения имеют приоритет над `.env`.
@@ -64,8 +66,9 @@ uv run browser-agent --task "Открой https://example.com и скажи за
 ```
 
 В интерактивном режиме можно вводить следующие задачи без перезапуска.
-Браузер остается открытым, а каждая задача получает новый диалог.
-`/quit`, `/exit` — закрыть; `/reset` — очистить диалог и refs, не удаляя cookies
+Браузер остается открытым, а краткие пары «задача → итог» сохраняются как ограниченный
+контекст текущего процесса. Сырые DOM-снимки и tool results в память не переносятся.
+`/quit`, `/exit` — закрыть; `/reset` — очистить контекст и refs, не удаляя cookies
 и не переходя со страницы. `/login` временно закрывает автоматизированный браузер,
 открывает обычный браузер с тем же профилем для ручного ввода логина, пароля, CAPTCHA
 или 2FA и после полного закрытия обычного браузера перезапускает агент. `Ctrl+C`
@@ -91,6 +94,7 @@ BROWSER_EXECUTABLE_PATH=/run/current-system/sw/bin/brave
 BROWSER_CHANNEL=
 BROWSER_HEADLESS=false
 BROWSER_PERSISTENT=true
+ALLOW_PRIVATE_NETWORK=false
 ```
 
 На других ОС укажите реальный путь к Brave/Chromium. `BROWSER_EXECUTABLE_PATH`
@@ -152,8 +156,8 @@ Cookies, localStorage и авторизация сохраняются посл�
 создает непостоянный context. Один профиль нельзя одновременно открывать двумя процессами.
 Скриншоты сохраняются в `screenshots/`, неожиданные ошибки — `errors.log`.
 Эти данные и `.env` исключены из Git. Не публикуйте профиль, скриншоты и логи:
-они могут содержать персональные данные. Аргументы tools (включая вводимый текст)
-видны в терминале — не поручайте агенту вводить пароли/ключи.
+они могут содержать персональные данные. Вводимый через `type_text` текст редактируется
+в терминале; остальные аргументы и результаты tools видны в scrollback.
 
 ## Архитектура
 
@@ -171,24 +175,28 @@ scripts/browser_smoke.py     проверка браузера без LLM
 ```
 
 Небольшие wrappers tools собраны в один registry вместо десятка однотипных файлов.
-LLM получает только tool schemas и компактные observations, не `Page`, context,
-CSS selectors или tab IDs. Tool calls исполняются последовательно.
+LLM получает только tool schemas и результаты явно вызванных tools, не `Page`, context,
+CSS selectors или tab IDs. `observe_page` отдает URL без query/fragment, title и
+счетчики, но не текст страницы и не список элементов. Нужные данные и refs модель выбирает сама
+через `query_dom`; ранжирование выполняется локально. Tool calls исполняются последовательно.
 Refs вида `e1` — временные, после нового observation старые недействительны.
 Не повторяются в пределах session, чтобы старый ref не попал на новый элемент.
 При изменении страницы следует вызвать новый `observe_page`.
 
-Наблюдения ограничены `MAX_ELEMENTS`, `MAX_TEXT_LENGTH`, `MAX_ELEMENT_TEXT_LENGTH`.
-Полный HTML модели не передается. `query_dom` — локальный текстовый scoring,
-не отдельный LLM call и не vector DB. `MAX_AGENT_STEPS` ограничивает работу агента,
-`MAX_HISTORY_CHARS` ограничивает накопленный диалог; превышение останавливает работу.
+Внутренний снимок ограничен `MAX_ELEMENTS`, `MAX_TEXT_LENGTH`,
+`MAX_ELEMENT_TEXT_LENGTH`. Полный HTML модели не передается. `query_dom` — локальный
+текстовый scoring, не отдельный LLM call и не vector DB; он возвращает не более
+`MAX_QUERY_RESULTS` элементов/фрагментов и `MAX_QUERY_TEXT_LENGTH` символов текста.
+`MAX_CONTEXT_CHARS` ограничивает память между задачами и вытесняет старые записи.
+`MAX_AGENT_STEPS` ограничивает работу агента, `MAX_HISTORY_CHARS` — один tool-calling run.
 
 ## Tools
 
 | Tool | Аргументы | Назначение |
 |---|---|---|
 | `navigate_to_url` | `url` | HTTP(S) навигация; обычный URL без `@url` обертки |
-| `observe_page` | — | URL/title, заголовки, текст, элементы и новые refs |
-| `query_dom` | `query` | Локальный поиск по snapshot |
+| `observe_page` | — | URL без query/fragment, title и счетчики без текста/элементов |
+| `query_dom` | `query`, `limit=10` | Выборка релевантного текста и элементов из snapshot |
 | `click_element` | `ref` | Проверенный клик по известному элементу |
 | `type_text` | `ref`, `text`, `typing=false` | fill или keyboard typing; без Enter |
 | `press_key` | `key` | Enter/Tab/Escape/стрелки/Space и ограниченный набор клавиш |
@@ -197,7 +205,6 @@ Refs вида `e1` — временные, после нового observation �
 | `take_screenshot` | `full_page=false` | PNG, возвращает локальный путь |
 | `wait` | `seconds` | 0.1–10 секунд |
 | `go_back` | — | Назад по истории |
-| `get_page_text` | — | Ограниченный видимый текст |
 
 Ошибки аргументов, timeout, stale/detached refs и закрытые страницы возвращаются
 как `success: false`, а не обрушивают agent loop. Скриншоты сохраняются для
@@ -229,6 +236,7 @@ uv run python scripts/browser_smoke.py
 - CAPTCHA, anti-bot, адрес доставки, авторизация и платные API требуют участия пользователя.
 - Основной механизм — DOM; canvas-only интерфейсы, сложные iframe и нестандартные
   closed shadow DOM могут оказаться недоступны. Нет OCR/координатного vision-агента.
-- Локальные/внутренние HTTP URL не блокируются; запускайте только доверенные задачи.
+- Локальные, loopback, link-local и literal private-IP URL блокируются по умолчанию.
+  Для доверенного локального сайта задайте `ALLOW_PRIVATE_NETWORK=true`.
 - Полный AI-проход нельзя проверить без вашей модели и API key. Unit tests
   используют управляемые ответы/fake transport, а не выдуманные реальные API результаты.
